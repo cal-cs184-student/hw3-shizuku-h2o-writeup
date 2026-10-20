@@ -1,106 +1,222 @@
-<html>
-	<head>
-		<script src='https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.4/MathJax.js?config=default'></script>
-		<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-		<style>
-			h1 {
-				text-align: center;
-			}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CS184 Homework 3: Pathtracer</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px; line-height: 1.55; color: #212529; }
+    h1, h2, h3 { line-height: 1.2; }
+    h2 { margin-top: 40px; border-bottom: 1px solid #dee2e6; padding-bottom: 6px; }
+    img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 4px; }
+    figure { margin: 12px 0; text-align: center; }
+    figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; }
+    .row figure { flex: 1 1 22%; margin: 0; }
+    .row2 figure { flex: 1 1 45%; margin: 0; }
+    code { background: #f1f3f5; padding: 1px 4px; border-radius: 3px; }
+  </style>
+</head>
+<body>
 
-			.container {
-				margin: 0 auto;
-				padding: 60px 20%;
-			}
+<h1>CS184/284A Homework 3: Pathtracer</h1>
+<p><strong>Name:</strong> Ruize Zheng &nbsp;|&nbsp; <strong>Webpage:</strong> <a href="https://cal-cs184-student.github.io/hw3-shizuku-h2o-writeup/">https://cal-cs184-student.github.io/hw3-shizuku-h2o-writeup/</a></p>
 
-			figure {
-				text-align: center;
-			}
+<h2>Overview</h2>
+<p>
+  In this assignment I built a physically-based path tracer around a BVH-accelerated scene. I implemented
+  camera ray generation, ray-triangle and ray-sphere intersection, bounding-volume-hierarchy construction
+  and traversal, diffuse and emissive BSDFs, direct lighting with both uniform-hemisphere and light
+  importance sampling, multi-bounce global illumination with Russian roulette, and adaptive sampling. The
+  through-line is the rendering equation: every lighting estimate is a Monte Carlo integral where choosing
+  a good sampling density (<code>cos</code>-weighted BSDF samples, light samples, or adaptive pixel
+  samples) is what separates a noisy image from a converged one.
+</p>
 
-			img {
-				display: inline-block;
-			}
+<h2>Part 1: Ray Generation and Scene Intersection</h2>
+<p>
+  <code>Camera::generate_ray</code> maps a normalized image coordinate <code>(x, y)</code> onto the
+  camera's sensor plane at <code>z = -1</code>: the horizontal span is
+  <code>[-tan(hFov/2), tan(hFov/2)]</code> and similarly for <code>vFov</code>, so
+  <code>(0,0)</code> and <code>(1,1)</code> land on the bottom-left and top-right corners. The resulting
+  camera-space direction is normalized and rotated by the camera-to-world matrix <code>c2w</code>, and the
+  ray is clipped to <code>[nClip, fClip]</code>.
+</p>
+<p>
+  Triangle intersection uses the Möller–Trumbore algorithm. With two triangle edges
+  <code>e1 = p2 - p1</code> and <code>e2 = p3 - p1</code>, I solve for the barycentric coordinates
+  <code>(u, v)</code> and ray parameter <code>t</code> in one determinant computation. A ray is rejected
+  if <code>u &lt; 0</code>, <code>v &lt; 0</code>, <code>u + v &gt; 1</code>, or <code>t</code> is outside
+  <code>[min_t, max_t]</code>; otherwise <code>max_t</code> is tightened to <code>t</code> so later
+  intersections are quickly rejected. The surface normal is the barycentric interpolation of the three
+  vertex normals: <code>(1 - u - v) n1 + u n2 + v n3</code>. Sphere intersection solves the quadratic
+  <code>|o + t d - c|^2 = r^2</code> and picks the nearest valid root.
+</p>
 
-			body {
-				font-family: 'Inter', sans-serif;
-			}
-		</style>
-	</head>
-	<body>
-		<div class="container">
-		<h1>CS184/284A Fall 2026 Homework 3 Write-Up</h1>
-		<div style="text-align: center;">Names: </div>
+<div class="row2">
+  <figure><img src="./images/p1_banana.png" alt="banana normal shading"><figcaption><code>dae/keenan/banana.dae</code>, normal shading.</figcaption></figure>
+  <figure><img src="./images/p1_cube.png" alt="cube normal shading"><figcaption><code>dae/simple/cube.dae</code>, normal shading.</figcaption></figure>
+  <figure><img src="./images/p1_spheres.png" alt="spheres normal shading"><figcaption><code>dae/sky/CBspheres_lambertian.dae</code>, normal shading.</figcaption></figure>
+</div>
 
-		<br>
+<h2>Part 2: Bounding Volume Hierarchy</h2>
+<p>
+  I build the BVH recursively. Each node owns the union bounding box of its primitives. If a node contains
+  at most <code>max_leaf_size</code> primitives it becomes a leaf (storing <code>start</code> and
+  <code>end</code> iterators into the primitive array). Otherwise I split along the axis of the box's
+  largest extent and use <code>std::nth_element</code> to partition the primitives by the median of their
+  bounding-box centroids, then recurse on the two halves. The median split always produces two non-empty
+  halves, so the recursion is guaranteed to terminate. Box traversal uses the slab method, and
+  <code>intersect</code> tests both children while keeping the ray's <code>max_t</code> so only the
+  nearest primitive survives.
+</p>
 
-		Link to webpage: (TODO) <a href="https://cs184.eecs.berkeley.edu/fa26">cs184.eecs.berkeley.edu/fa26</a>
-		Link to GitHub repository: (TODO) <a href="https://cs184.eecs.berkeley.edu/fa26">cs184.eecs.berkeley.edu/fa26</a>
-		
-		<figure>
-			<img src="assets/cornell.png" alt="Cornell Boxes with Bunnies" style="width:70%"/>
-			<figcaption>You can add images with captions!</figcaption>
-		</figure>
+<div class="row2">
+  <figure><img src="./images/p2_cow.png" alt="cow normal shading"><figcaption><code>dae/meshedit/cow.dae</code> (5,856 triangles).</figcaption></figure>
+  <figure><img src="./images/p2_maxplanck.png" alt="maxplanck normal shading"><figcaption><code>dae/meshedit/maxplanck.dae</code> (50,801 triangles).</figcaption></figure>
+  <figure><img src="./images/p2_lucy.png" alt="lucy normal shading"><figcaption><code>dae/sky/CBlucy.dae</code> (133,796 triangles).</figcaption></figure>
+</div>
 
-		<!--
-		We've already added one heading per part, to make your write-up as navigable when grading. Please fit your write-up within these sections!
-		-->
+<p>
+  Timing comparison (normal shading, 16 threads): <code>cow.dae</code> took 0.0533s with the BVH versus
+  23.14s with naive O(n) traversal (~434× speedup); <code>maxplanck.dae</code> took 0.0365s versus 88.06s
+  (~2412×). The larger the triangle count, the more the BVH wins, because it turns the per-ray primitive
+  test from linear in scene size into roughly logarithmic.
+</p>
 
-		<h2>Overview</h2>
-		Give a high-level overview of what you implemented in this homework. Think about what you've built as a whole. Share your thoughts on what interesting things you've learned from completing the homework.
+<h2>Part 3: Direct Illumination</h2>
+<p>
+  <code>DiffuseBSDF::f</code> returns <code>reflectance / PI</code>, the Lambertian BRDF.
+  <code>estimate_direct_lighting_hemisphere</code> samples incoming directions uniformly on the upper
+  hemisphere around the surface normal, casts a shadow ray for each sample, and accumulates
+  <code>emission * f * cos(theta) * 2*PI</code>, dividing by the sample count.
+  <code>estimate_direct_lighting_importance</code> instead samples each light source directly
+  (<code>sample_L</code>), converts the returned world-space direction to object space, skips lights
+  behind the surface, and casts one shadow ray per sample with <code>max_t = distToLight - EPS_F</code>;
+  it accumulates <code>L_i * f * cos(theta) / pdf</code>. Delta lights are sampled once, area lights
+  <code>ns_area_light</code> times. <code>one_bounce_radiance</code> dispatches between the two based on
+  <code>direct_hemisphere_sample</code>.
+</p>
 
-		<h2>Part 1: Ray Generation and Scene Intersection</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+<div class="row2">
+  <figure><img src="./images/p3_hemisphere.png" alt="hemisphere sampling"><figcaption>Uniform hemisphere sampling (64 spp, 32 light samples).</figcaption></figure>
+  <figure><img src="./images/p3_importance.png" alt="light importance sampling"><figcaption>Light importance sampling (64 spp, 32 light samples).</figcaption></figure>
+</div>
 
-		<p>Here is an example 2x2 gridlike structure using an HTML table. Each <b>tr</b> is a row and each <b>td</b> is a column in that row. You might find this useful for framing and showing your result images in an organized fashion.</p>
-		<div style="display: flex; flex-direction: column; align-items: center;">
-			<table style="width: 100%; text-align: center; border-collapse: collapse;">
-			  <tr>
-				<td style="text-align: center;">
-				  <img src="assets/cornell.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-				<td style="text-align: center;">
-				  <img src="assets/cornell.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-			  </tr>
-			  <tr>
-				<td style="text-align: center;">
-				  <img src="assets/cornell.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-				<td style="text-align: center;">
-				  <img src="assets/cornell.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-			  </tr>
-			</table>
-		</div>
-		
-		<h2>Part 2: Bounding Volume Hierarchy</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+<p>
+  Soft shadows under light importance sampling, varying the number of samples per area light
+  (<code>-l</code>) with 1 sample per pixel:
+</p>
 
-		<h2>Part 3: Direct Illumination</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+<div class="row">
+  <figure><img src="./images/p3_shadow_l1.png" alt="l=1"><figcaption><code>-l 1</code></figcaption></figure>
+  <figure><img src="./images/p3_shadow_l4.png" alt="l=4"><figcaption><code>-l 4</code></figcaption></figure>
+  <figure><img src="./images/p3_shadow_l16.png" alt="l=16"><figcaption><code>-l 16</code></figcaption></figure>
+  <figure><img src="./images/p3_shadow_l64.png" alt="l=64"><figcaption><code>-l 64</code></figcaption></figure>
+</div>
 
-		<h2>Part 4: Global Illumination</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+<p>
+  Uniform hemisphere sampling wastes most of its samples on directions that never hit a light, so it is far
+  noisier and also lacks the light's directional behavior. Importance sampling spends every sample on an
+  actual light, so the same sample budget produces much cleaner soft shadows; higher <code>-l</code> values
+  smooth the penumbra by averaging more points across the area light.
+</p>
 
-		<h2>Part 5: Adaptive Sampling</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+<h2>Part 4: Global Illumination</h2>
+<p>
+  <code>DiffuseBSDF::sample_f</code> draws a <code>cos</code>-weighted incoming direction and returns both
+  that direction and its pdf. <code>at_least_one_bounce_radiance</code> computes the one-bounce direct
+  term, then samples a direction according to the surface BSDF, traces a ray in that direction, and
+  recursively evaluates the radiance arriving at the next hit; the recursive contribution is weighted by
+  <code>f * cos(theta) / pdf</code> and by the inverse continuation probability for Russian roulette
+  (<code>cpdf = 0.7</code>, with the first indirect bounce always traced). Accumulated mode sums every
+  bounce; unaccumulated mode returns only the deepest requested bounce.
+</p>
 
-		<h2>(Optional) Part 6: Extra Credit Opportunities</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-		
-		<h2>Additional Notes (please remove)</h2>
-		<ul>
-			<li>You can also add code if you'd like as so: <code>code code code</code></li>
-			<li>If you'd like to add math equations, 
-				<ul>
-					<li>You can write inline equations like so: \( a^2 + b^2 = c^2 \)</li>
-					<li>You can write display equations like so: \[ a^2 + b^2 = c^2 \]</li>
-				</ul>
-			</li>
-		</ul>
-		</div>
-	</body>
+<div class="row2">
+  <figure><img src="./images/p4_gi_bunny.png" alt="global illumination bunny"><figcaption><code>CBbunny.dae</code>, global illumination (1024 spp).</figcaption></figure>
+  <figure><img src="./images/p4_gi_spheres.png" alt="global illumination spheres"><figcaption><code>CBspheres_lambertian.dae</code>, global illumination (1024 spp).</figcaption></figure>
+</div>
+
+<p>Direct illumination only, versus indirect illumination only, for <code>CBbunny.dae</code> (1024 spp):</p>
+
+<div class="row2">
+  <figure><img src="./images/p4_direct.png" alt="direct only"><figcaption>Direct illumination only (zero-bounce + one-bounce).</figcaption></figure>
+  <figure><img src="./images/p4_indirect.png" alt="indirect only"><figcaption>Indirect illumination only (bounces &ge; 2).</figcaption></figure>
+</div>
+
+<p>Accumulated bounces, <code>m = 0..5</code>:</p>
+<div class="row">
+  <figure><img src="./images/p4_acc_m0.png" alt="acc m0"><figcaption>m=0</figcaption></figure>
+  <figure><img src="./images/p4_acc_m1.png" alt="acc m1"><figcaption>m=1</figcaption></figure>
+  <figure><img src="./images/p4_acc_m2.png" alt="acc m2"><figcaption>m=2</figcaption></figure>
+  <figure><img src="./images/p4_acc_m3.png" alt="acc m3"><figcaption>m=3</figcaption></figure>
+  <figure><img src="./images/p4_acc_m4.png" alt="acc m4"><figcaption>m=4</figcaption></figure>
+  <figure><img src="./images/p4_acc_m5.png" alt="acc m5"><figcaption>m=5</figcaption></figure>
+</div>
+
+<p>Unaccumulated bounces (only the <code>m</code>-th bounce), <code>m = 0..5</code>:</p>
+<div class="row">
+  <figure><img src="./images/p4_unacc_m0.png" alt="unacc m0"><figcaption>m=0</figcaption></figure>
+  <figure><img src="./images/p4_unacc_m1.png" alt="unacc m1"><figcaption>m=1</figcaption></figure>
+  <figure><img src="./images/p4_unacc_m2.png" alt="unacc m2"><figcaption>m=2</figcaption></figure>
+  <figure><img src="./images/p4_unacc_m3.png" alt="unacc m3"><figcaption>m=3</figcaption></figure>
+  <figure><img src="./images/p4_unacc_m4.png" alt="unacc m4"><figcaption>m=4</figcaption></figure>
+  <figure><img src="./images/p4_unacc_m5.png" alt="unacc m5"><figcaption>m=5</figcaption></figure>
+</div>
+
+<p>
+  The 2nd bounce already reveals indirect light that was completely missing from rasterization/direct-only
+  images: the shadowed side of the bunny and the box corners pick up light reflected off nearby walls. The
+  3rd bounce adds subtle further color bleeding. These terms are exactly what make a path-traced image look
+  grounded compared to a one-bounce render.
+</p>
+
+<p>Russian roulette with <code>m = 0, 1, 2, 3, 4, 100</code>:</p>
+<div class="row">
+  <figure><img src="./images/p4_rr_m0.png" alt="rr m0"><figcaption>m=0</figcaption></figure>
+  <figure><img src="./images/p4_rr_m1.png" alt="rr m1"><figcaption>m=1</figcaption></figure>
+  <figure><img src="./images/p4_rr_m2.png" alt="rr m2"><figcaption>m=2</figcaption></figure>
+  <figure><img src="./images/p4_rr_m3.png" alt="rr m3"><figcaption>m=3</figcaption></figure>
+  <figure><img src="./images/p4_rr_m4.png" alt="rr m4"><figcaption>m=4</figcaption></figure>
+  <figure><img src="./images/p4_rr_m100.png" alt="rr m100"><figcaption>m=100</figcaption></figure>
+</div>
+
+<p>Sample-per-pixel comparison (4 light rays, <code>CBbunny.dae</code>):</p>
+<div class="row">
+  <figure><img src="./images/p4_spp_1.png" alt="1 spp"><figcaption>1 spp</figcaption></figure>
+  <figure><img src="./images/p4_spp_2.png" alt="2 spp"><figcaption>2 spp</figcaption></figure>
+  <figure><img src="./images/p4_spp_4.png" alt="4 spp"><figcaption>4 spp</figcaption></figure>
+  <figure><img src="./images/p4_spp_8.png" alt="8 spp"><figcaption>8 spp</figcaption></figure>
+  <figure><img src="./images/p4_spp_16.png" alt="16 spp"><figcaption>16 spp</figcaption></figure>
+  <figure><img src="./images/p4_spp_64.png" alt="64 spp"><figcaption>64 spp</figcaption></figure>
+  <figure><img src="./images/p4_spp_1024.png" alt="1024 spp"><figcaption>1024 spp</figcaption></figure>
+</div>
+
+<h2>Part 5: Adaptive Sampling</h2>
+<p>
+  Adaptive sampling stops tracing a pixel once its estimate has converged. For each pixel I keep the sums
+  <code>s1 = &Sigma; x_k</code> and <code>s2 = &Sigma; x_k^2</code> of the per-sample illuminance, from
+  which I compute the mean <code>mu = s1 / n</code> and variance
+  <code>sigma^2 = (s2 - s1^2/n) / (n - 1)</code>. Every <code>samplesPerBatch</code> samples I check
+  whether <code>1.96 * sigma / sqrt(n) &le; maxTolerance * mu</code> (the 95% confidence interval relative
+  to the mean) and, if so, stop. I record the actual sample count in <code>sampleCountBuffer</code> so the
+  rate image can be generated. Below are two scenes rendered with <code>2048</code> max samples,
+  <code>-a 64 0.05</code>, 1 light sample, and max ray depth 5.
+</p>
+
+<div class="row2">
+  <figure><img src="./images/p5_bunny.png" alt="adaptive bunny result"><figcaption><code>CBbunny.dae</code>, adaptive result.</figcaption></figure>
+  <figure><img src="./images/p5_bunny_rate.png" alt="adaptive bunny rate"><figcaption><code>CBbunny.dae</code>, sample-rate image.</figcaption></figure>
+  <figure><img src="./images/p5_spheres.png" alt="adaptive spheres result"><figcaption><code>CBspheres_lambertian.dae</code>, adaptive result.</figcaption></figure>
+  <figure><img src="./images/p5_spheres_rate.png" alt="adaptive spheres rate"><figcaption><code>CBspheres_lambertian.dae</code>, sample-rate image.</figcaption></figure>
+</div>
+
+<p>
+  The rate images show red where the pixel needed most of its sample budget (noisy regions such as soft
+  shadows and indirect-only areas) and blue/green where it converged quickly (flat, directly-lit walls).
+  This spends the render budget where it actually reduces noise.
+</p>
+
+</body>
 </html>
